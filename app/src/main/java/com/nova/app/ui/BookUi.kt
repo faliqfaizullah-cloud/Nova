@@ -1,6 +1,19 @@
 package com.nova.app.ui
 
 import android.content.Intent
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.style.TextOverflow
+import com.nova.app.PaperSound
+import kotlin.math.PI
+import kotlin.math.floor
+import kotlin.math.max
+import kotlin.math.sin
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
@@ -226,6 +239,21 @@ fun SpreadView(
     ) {
         val wPx = constraints.maxWidth.toFloat()
         val hPx = constraints.maxHeight.toFloat()
+        if (spread.title.isNotBlank()) {
+            val dens = LocalDensity.current
+            Text(
+                spread.title,
+                Modifier.align(Alignment.TopStart)
+                    .padding(start = with(dens) { (wPx * 0.05f).toDp() }, top = with(dens) { (hPx * 0.05f).toDp() })
+                    .widthIn(max = with(dens) { (wPx * 0.42f).toDp() }),
+                maxLines = 2, overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    fontFamily = NovaFonts.display, fontWeight = NovaFonts.displayWeight,
+                    fontSize = with(dens) { (wPx * 0.06f).toSp() },
+                    color = if (paper.luminance() < 0.4f) Color.White else NovaColors.Ink
+                )
+            )
+        }
         spread.elements.forEach { e ->
             key(e.id) { ElementView(e, wPx, hPx, e.id == selectedId, interactive, onSelect, onChange) }
         }
@@ -324,7 +352,171 @@ private fun ElementView(
     }
 }
 
-// ---------------------------------------------------------------- carousel screen
+// ---------------------------------------------------------------- real page-turning book
+@Composable
+private fun Half(s: Spread, right: Boolean, halfW: Dp, fullH: Dp, modifier: Modifier = Modifier) {
+    Box(modifier.size(halfW, fullH).clipToBounds()) {
+        SpreadView(s, Modifier.requiredSize(halfW * 2, fullH).offset(x = if (right) -halfW else 0.dp))
+    }
+}
+
+/**
+ * A book you turn like a real one: drag a page across the spine, it lifts in 3D, shades, flips and
+ * lands with a bounce while a paper-slide sound plays. Tap the left/right edge to turn, centre to edit.
+ */
+@Composable
+fun BookFlip(
+    spreads: List<Spread>, index: Int,
+    onIndexChange: (Int) -> Unit, onOpen: (Spread) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val view = LocalView.current
+    val scope = rememberCoroutineScope()
+    val n = spreads.size
+    val maxP = max(0, n - 1).toFloat()
+    val p = remember { Animatable(index.coerceIn(0, max(0, n - 1)).toFloat()) }
+    var dragging by remember { mutableStateOf(false) }
+
+    LaunchedEffect(n) { p.updateBounds(0f, maxP); if (p.value > maxP) p.snapTo(maxP) }
+    LaunchedEffect(index, n) {
+        val t = index.coerceIn(0, max(0, n - 1)).toFloat()
+        if (!dragging && kotlin.math.abs(p.value - t) > 0.01f) {
+            PaperSound.play(); view.tick()
+            p.animateTo(t, spring(0.75f, Spring.StiffnessLow))
+        }
+    }
+
+    BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
+        val a = maxWidth - 32.dp
+        val b = (maxHeight - 12.dp) * BookLayout.ASPECT
+        val fullW = if (a < b) a else b
+        val fullH = fullW / BookLayout.ASPECT
+        val halfW = fullW / 2
+        val halfPx = with(LocalDensity.current) { halfW.toPx() }
+
+        val base by remember(n) { derivedStateOf { floor(p.value).toInt().coerceIn(0, max(0, n - 1)) } }
+        val flipping by remember(n) { derivedStateOf { (p.value - base) > 0.002f && base < n - 1 } }
+
+        fun settle(lastDx: Float, startIdx: Int, played: Boolean) {
+            val cur = p.value
+            val bs = floor(cur).toInt()
+            val f = cur - bs
+            val target = when {
+                lastDx < -2f -> if (f > 0.18f) bs + 1 else bs
+                lastDx > 2f -> if (f < 0.82f) bs else bs + 1
+                else -> kotlin.math.round(cur).toInt()
+            }.coerceIn(0, max(0, n - 1))
+            if (target != startIdx && !played) { PaperSound.play() }
+            scope.launch {
+                p.animateTo(target.toFloat(), spring(0.75f, Spring.StiffnessLow))
+                dragging = false
+                if (target != startIdx) view.confirm()
+                onIndexChange(target)
+            }
+        }
+
+        fun turn(delta: Int) {
+            val cur = kotlin.math.round(p.value).toInt()
+            val t = (cur + delta).coerceIn(0, max(0, n - 1))
+            if (t == cur) return
+            PaperSound.play(); view.tick()
+            scope.launch {
+                dragging = true
+                p.animateTo(t.toFloat(), spring(0.75f, Spring.StiffnessLow))
+                dragging = false
+                view.confirm()
+                onIndexChange(t)
+            }
+        }
+
+        Box(
+            Modifier.size(fullW, fullH)
+                .pointerInput(n) {
+                    detectTapGestures { off ->
+                        val x = off.x / size.width
+                        when {
+                            x < 0.16f -> turn(-1)
+                            x > 0.84f -> turn(+1)
+                            else -> spreads.getOrNull(kotlin.math.round(p.value).toInt())?.let(onOpen)
+                        }
+                    }
+                }
+                .pointerInput(n, halfPx) {
+                    var lastDx = 0f
+                    var startIdx = 0
+                    var startVal = 0f
+                    var played = false
+                    detectHorizontalDragGestures(
+                        onDragStart = {
+                            dragging = true; played = false; lastDx = 0f
+                            startVal = p.value; startIdx = kotlin.math.round(p.value).toInt()
+                            scope.launch { p.stop() }
+                        },
+                        onHorizontalDrag = { change, dx ->
+                            change.consume()
+                            lastDx = dx
+                            val np = (p.value - dx / (halfPx * 1.4f)).coerceIn(0f, maxP)
+                            scope.launch { p.snapTo(np) }
+                            if (!played && kotlin.math.abs(np - startVal) > 0.06f) {
+                                played = true; PaperSound.play(); view.tick()
+                            }
+                        },
+                        onDragEnd = { settle(lastDx, startIdx, played) },
+                        onDragCancel = { settle(lastDx, startIdx, played) }
+                    )
+                }
+        ) {
+            // paper stack under the book + soft shadow
+            Box(Modifier.size(fullW, fullH).shadow(14.dp, RoundedCornerShape(18.dp)))
+            Box(Modifier.offset(y = 7.dp).size(fullW, fullH).clip(RoundedCornerShape(18.dp)).background(Color(0xFFCFC6B4)))
+            Box(Modifier.offset(y = 3.5.dp).size(fullW, fullH).clip(RoundedCornerShape(18.dp)).background(Color(0xFFE6DECD)))
+
+            if (!flipping) {
+                spreads.getOrNull(base)?.let { SpreadView(it, Modifier.size(fullW, fullH)) }
+            } else {
+                val cur = spreads[base]
+                val nxt = spreads[base + 1]
+                // page revealed under the turning leaf (right half of next spread) + staying left page
+                Half(cur, false, halfW, fullH, Modifier.align(Alignment.TopStart))
+                Box(Modifier.align(Alignment.TopEnd)) {
+                    Half(nxt, true, halfW, fullH)
+                    Box(
+                        Modifier.matchParentSize().graphicsLayer {
+                            val f = (p.value - base).coerceIn(0f, 1f)
+                            alpha = 0.30f * sin(PI.toFloat() * f)
+                        }.background(Color.Black)
+                    )
+                }
+                // the leaf: front = right half of current, back = left half of next; hinged on the spine
+                Box(
+                    Modifier.align(Alignment.TopEnd).graphicsLayer {
+                        val f = (p.value - base).coerceIn(0f, 1f)
+                        transformOrigin = TransformOrigin(0f, 0.5f)
+                        rotationY = 180f * f
+                        cameraDistance = 18f * density
+                    }
+                ) {
+                    Half(
+                        cur, true, halfW, fullH,
+                        Modifier.graphicsLayer { alpha = if ((p.value - base) < 0.5f) 1f else 0f }
+                    )
+                    Half(
+                        nxt, false, halfW, fullH,
+                        Modifier.graphicsLayer { scaleX = -1f; alpha = if ((p.value - base) >= 0.5f) 1f else 0f }
+                    )
+                    Box(
+                        Modifier.matchParentSize().graphicsLayer {
+                            val f = (p.value - base).coerceIn(0f, 1f)
+                            alpha = 0.38f * sin(PI.toFloat() * f)
+                        }.background(Color.Black)
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- Journal screen
 @Composable
 fun BookScreen(book: BookState, onClose: () -> Unit) {
     val ctx = LocalContext.current
@@ -336,23 +528,18 @@ fun BookScreen(book: BookState, onClose: () -> Unit) {
     var query by remember { mutableStateOf<String?>(null) }
     var showMore by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf(false) }
+    var titleFor by remember { mutableStateOf<Long?>(null) }
+    var pageIndex by remember { mutableIntStateOf(0) }
 
     BackHandler(enabled = editing == null) { onClose() }
 
     val q = query
     val visible = if (q.isNullOrBlank()) book.spreads.toList() else book.spreads.filter { s ->
-        s.elements.any { it.type == ElType.TEXT && it.data.contains(q, ignoreCase = true) }
+        s.title.contains(q, ignoreCase = true) ||
+            s.elements.any { it.type == ElType.TEXT && it.data.contains(q, ignoreCase = true) }
     }
-    val pager = rememberPagerState { visible.size }
-    val cur = visible.getOrNull(pager.currentPage)
-
-    var first by remember { mutableStateOf(true) }
-    LaunchedEffect(pager.settledPage) { if (first) first = false else view.tick() }
-    var lastCount by remember { mutableIntStateOf(book.spreads.size) }
-    LaunchedEffect(book.spreads.size) {
-        if (book.spreads.size > lastCount && q.isNullOrBlank()) pager.animateScrollToPage(book.spreads.size - 1)
-        lastCount = book.spreads.size
-    }
+    val idx = pageIndex.coerceIn(0, max(0, visible.size - 1))
+    val cur = visible.getOrNull(idx)
 
     Box(Modifier.fillMaxSize()) {
         BookBackdrop(Modifier.fillMaxSize())
@@ -383,19 +570,23 @@ fun BookScreen(book: BookState, onClose: () -> Unit) {
                         .clip(CircleShape).background(Color.White.copy(alpha = 0.14f)).padding(horizontal = 18.dp, vertical = 12.dp),
                     decorationBox = { inner ->
                         Box {
-                            if (query.isNullOrEmpty()) Text("Search text on your pages", style = bodyStyle(16.sp, color = Color.White.copy(alpha = 0.5f)))
+                            if (query.isNullOrEmpty()) Text("Search titles and text", style = bodyStyle(16.sp, color = Color.White.copy(alpha = 0.5f)))
                             inner()
                         }
                     }
                 )
             }
-            Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(8.dp))
+            // tap the title to give your journal its own name
             Text(
-                book.title, Modifier.fillMaxWidth(),
-                style = bodyStyle(34.sp, FontWeight.Bold, Color.White).copy(textAlign = TextAlign.Center)
+                book.title,
+                Modifier.fillMaxWidth().bounceClick { renaming = true },
+                style = bodyStyle(34.sp, FontWeight.Bold, Color.White).copy(textAlign = TextAlign.Center),
+                maxLines = 1, overflow = TextOverflow.Ellipsis
             )
             Text(
-                "${book.spreads.size} Pages", Modifier.fillMaxWidth().padding(top = 4.dp),
+                if (visible.isEmpty()) "0 Pages" else "Page ${idx + 1} of ${visible.size}",
+                Modifier.fillMaxWidth().padding(top = 2.dp),
                 style = bodyStyle(15.sp, FontWeight.SemiBold, Color.White.copy(alpha = 0.7f)).copy(textAlign = TextAlign.Center)
             )
 
@@ -409,41 +600,40 @@ fun BookScreen(book: BookState, onClose: () -> Unit) {
                         verticalArrangement = Arrangement.spacedBy(14.dp),
                         horizontalArrangement = Arrangement.spacedBy(14.dp)
                     ) {
-                        itemsIndexed(visible, key = { _, s -> s.id }) { _, s ->
-                            SpreadView(s, Modifier.bounceClick { editing = s.id })
+                        itemsIndexed(visible, key = { _, s -> s.id }) { i, s ->
+                            SpreadView(s, Modifier.bounceClick { pageIndex = i; grid = false })
                         }
                     }
                 } else {
-                    HorizontalPager(
-                        state = pager, contentPadding = PaddingValues(horizontal = 30.dp), pageSpacing = 8.dp,
-                        modifier = Modifier.fillMaxWidth()
-                    ) { page ->
-                        val s = visible[page]
-                        Box(
-                            Modifier.fillMaxWidth().graphicsLayer {
-                                val off = pager.currentPage - page + pager.currentPageOffsetFraction
-                                val a = abs(off).coerceAtMost(1f)
-                                rotationY = (-off * 32f).coerceIn(-50f, 50f)
-                                cameraDistance = 14f * density
-                                scaleX = 1f - 0.16f * a
-                                scaleY = 1f - 0.16f * a
-                                alpha = 1f - 0.3f * a
-                            },
-                            contentAlignment = Alignment.Center
-                        ) { SpreadView(s, Modifier.fillMaxWidth().bounceClick { editing = s.id }) }
-                    }
+                    BookFlip(
+                        spreads = visible, index = idx,
+                        onIndexChange = { pageIndex = it },
+                        onOpen = { editing = it.id },
+                        modifier = Modifier.fillMaxSize()
+                    )
                 }
+            }
+
+            // page title: each page can have its own title, written on the page itself
+            if (cur != null && !grid) {
+                Text(
+                    if (cur.title.isBlank()) "＋ Add a title to this page" else cur.title,
+                    Modifier.fillMaxWidth().bounceClick { titleFor = cur.id }.padding(horizontal = 24.dp, vertical = 10.dp),
+                    style = bodyStyle(16.sp, FontWeight.SemiBold, Color.White.copy(alpha = if (cur.title.isBlank()) 0.6f else 1f))
+                        .copy(textAlign = TextAlign.Center),
+                    maxLines = 1, overflow = TextOverflow.Ellipsis
+                )
             }
 
             if (showMore && cur != null) {
                 Column(Modifier.fillMaxWidth().padding(bottom = 10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    ChipPill("Duplicate page") { book.duplicate(cur.id); showMore = false; view.confirm() }
+                    ChipPill("Duplicate page") { book.duplicate(cur.id); pageIndex = idx + 1; showMore = false; view.confirm() }
                     ChipPill("Change paper") { book.replace(cur.copy(paper = (cur.paper + 1) % BookLayout.Papers.size)); book.save(); showMore = false }
                     ChipPill("Clear page") { book.replace(cur.copy(elements = emptyList())); book.save(); showMore = false; view.confirm() }
                 }
             }
             Row(
-                Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 22.dp),
+                Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 22.dp),
                 horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.CenterHorizontally)
             ) {
                 CircleBtn(Ico.DOTS, Color.White, NovaColors.Ink) { showMore = !showMore }
@@ -468,12 +658,23 @@ fun BookScreen(book: BookState, onClose: () -> Unit) {
                     cur?.let { book.remove(it.id); view.confirm() }
                 }
                 CircleBtn(Ico.PLUS, Color.White, NovaColors.Ink) {
-                    val s = book.add(); view.confirm(); editing = s.id
+                    val s = book.add(); view.confirm()
+                    query = null; grid = false
+                    pageIndex = book.spreads.size - 1
+                    editing = s.id
                 }
             }
         }
 
         editing?.let { id -> BookEditor(book, id) { editing = null } }
         if (renaming) TextPrompt("Name your journal", book.title) { t -> renaming = false; if (t != null) book.rename(t) }
+        titleFor?.let { id ->
+            val s = book.spreads.firstOrNull { it.id == id }
+            if (s == null) titleFor = null
+            else TextPrompt("Page title", s.title) { t ->
+                titleFor = null
+                if (t != null) { book.replace(s.copy(title = t.trim())); book.save() }
+            }
+        }
     }
 }

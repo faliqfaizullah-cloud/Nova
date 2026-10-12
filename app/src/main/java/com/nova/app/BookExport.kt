@@ -20,6 +20,17 @@ object BookExport {
         c.drawColor(BookLayout.Papers[s.paper % BookLayout.Papers.size].toInt())
         val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
 
+        if (s.title.isNotBlank()) {
+            val paperC = BookLayout.Papers[s.paper % BookLayout.Papers.size].toInt()
+            val tp = android.text.TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                textSize = 0.06f * w
+                color = if (androidx.core.graphics.ColorUtils.calculateLuminance(paperC) < 0.4) 0xFFFFFFFF.toInt() else 0xFF1A1A1A.toInt()
+                typeface = Typeface.DEFAULT_BOLD
+            }
+            val t = android.text.TextUtils.ellipsize(s.title.replace("\n", " "), tp, w * 0.42f, android.text.TextUtils.TruncateAt.END)
+            c.drawText(t.toString(), w * 0.05f, h * 0.05f + tp.textSize, tp)
+        }
+
         s.elements.forEach { e ->
             c.save()
             c.translate(e.x * w, e.y * h)

@@ -111,6 +111,8 @@ fun BookEditor(book: BookState, spreadId: Long, onClose: () -> Unit) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 PillButton("Done") { view.confirm(); book.save(); onClose() }
                 Spacer(Modifier.weight(1f))
+                ChipPill(if (spread.title.isBlank()) "Title" else "Title ✎") { prompt = -2L }
+                Spacer(Modifier.width(8.dp))
                 ChipPill("Paper") { book.replace(spread.copy(paper = (spread.paper + 1) % BookLayout.Papers.size)) }
             }
             Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -159,7 +161,12 @@ fun BookEditor(book: BookState, spreadId: Long, onClose: () -> Unit) {
             }
         }
 
-        prompt?.let { id ->
+        if (prompt == -2L) {
+            TextPrompt("Page title", spread.title) { t ->
+                prompt = null
+                if (t != null) book.replace(spread.copy(title = t.trim()))
+            }
+        } else prompt?.let { id ->
             val existing = spread.elements.firstOrNull { it.id == id }
             TextPrompt(if (id == -1L) "Add text" else "Edit text", existing?.data ?: "") { t ->
                 prompt = null

@@ -1,6 +1,7 @@
 package com.nova.app
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -10,6 +11,7 @@ import org.json.JSONObject
 
 enum class ElType { PHOTO, STICKER, TEXT }
 
+@Immutable
 /** One user-made item on a page. x/y are the centre in 0..1 of the spread; scale/rot are user gestures. */
 data class Element(
     val id: Long,
@@ -24,7 +26,8 @@ data class Element(
 )
 
 /** A spread = two facing pages with a spiral binding in the middle. */
-data class Spread(val id: Long, val paper: Int, val elements: List<Element>)
+@Immutable
+data class Spread(val id: Long, val paper: Int, val elements: List<Element>, val title: String = "")
 
 object BookLayout {
     const val ASPECT = 1.3f
@@ -57,7 +60,8 @@ class BookStore(ctx: Context) {
                         e.optDouble("scale", 1.0).toFloat(), e.optDouble("rot", 0.0).toFloat(),
                         e.optBoolean("framed", true), e.optInt("color", 0)
                     )
-                }
+                },
+                o.optString("title", "")
             )
         }
     }.getOrDefault(emptyList())
@@ -74,7 +78,7 @@ class BookStore(ctx: Context) {
                     put("framed", e.framed); put("color", e.color)
                 })
             }
-            arr.put(JSONObject().apply { put("id", s.id); put("paper", s.paper); put("els", ea) })
+            arr.put(JSONObject().apply { put("id", s.id); put("paper", s.paper); put("els", ea); put("title", s.title) })
         }
         prefs.edit().putString("spreads", arr.toString()).apply()
     }
