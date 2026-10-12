@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.nova.app.Entry
 import com.nova.app.EntryType
+import com.nova.app.isCutOut
 import kotlinx.coroutines.delay
 import java.io.File
 import java.text.SimpleDateFormat
@@ -35,7 +36,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun HomeScreen(entries: List<Entry>, onNew: (EntryType) -> Unit, onOpen: (Entry) -> Unit) {
+fun HomeScreen(entries: List<Entry>, onNew: (EntryType) -> Unit, onOpen: (Entry) -> Unit, onOpenBook: () -> Unit) {
     val view = LocalView.current
     val pager = rememberPagerState { 3 }
     var first by remember { mutableStateOf(true) }
@@ -44,9 +45,11 @@ fun HomeScreen(entries: List<Entry>, onNew: (EntryType) -> Unit, onOpen: (Entry)
     val notes = entries.filter { it.type == EntryType.NOTE }
     val journal = entries.filter { it.type == EntryType.JOURNAL }
     val photos = entries.flatMap { e -> e.photos.map { e to it } }
+    val hero = photos.map { it.second }.firstOrNull { isCutOut(it) }
 
     Column(
-        Modifier.fillMaxSize().background(NovaColors.Green)
+        Modifier.fillMaxSize()
+            .swipeVertical(up = true, onSwipe = onOpenBook)
             .statusBarsPadding().navigationBarsPadding().padding(vertical = 20.dp)
     ) {
         HorizontalPager(
@@ -55,7 +58,7 @@ fun HomeScreen(entries: List<Entry>, onNew: (EntryType) -> Unit, onOpen: (Entry)
         ) { page ->
             BouncyPage(page, pager.currentPage) {
                 when (page) {
-                    0 -> NotesCard(notes, onOpen) { onNew(EntryType.NOTE) }
+                    0 -> NotesCard(notes, hero, onOpen) { onNew(EntryType.NOTE) }
                     1 -> JournalCard(journal, onOpen) { onNew(EntryType.JOURNAL) }
                     else -> PhotosCard(photos, onOpen) { onNew(EntryType.PHOTO) }
                 }
@@ -73,6 +76,14 @@ fun HomeScreen(entries: List<Entry>, onNew: (EntryType) -> Unit, onOpen: (Entry)
                 )
             }
         }
+        Row(
+            Modifier.fillMaxWidth().padding(top = 10.dp).bounceClick(onOpenBook),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
+        ) {
+            BobbingChevron(NovaColors.Paper.copy(alpha = 0.8f))
+            Spacer(Modifier.width(8.dp))
+            Text("SWIPE UP · JOURNAL", style = bodyStyle(12.sp, FontWeight.SemiBold, NovaColors.Paper.copy(alpha = 0.8f)))
+        }
     }
 }
 
@@ -89,10 +100,14 @@ private fun BouncyPage(index: Int, current: Int, content: @Composable () -> Unit
 }
 
 @Composable
-private fun NotesCard(items: List<Entry>, onOpen: (Entry) -> Unit, onNew: () -> Unit) {
+private fun NotesCard(items: List<Entry>, hero: String?, onOpen: (Entry) -> Unit, onNew: () -> Unit) {
     NovaCard(NovaColors.Paper) {
         Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 32.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Wordmark(76.sp)
+            if (hero != null) {
+                Spacer(Modifier.height(8.dp))
+                Showcase(hero, Modifier.fillMaxWidth().height(150.dp))
+            }
             Spacer(Modifier.height(18.dp))
             EntryList(items, onOpen, "NO NOTES YET", Modifier.weight(1f))
             Spacer(Modifier.height(12.dp))
@@ -107,11 +122,21 @@ private fun NotesCard(items: List<Entry>, onOpen: (Entry) -> Unit, onNew: () -> 
 
 @Composable
 private fun JournalCard(items: List<Entry>, onOpen: (Entry) -> Unit, onNew: () -> Unit) {
+    val t = rememberInfiniteTransition(label = "tag")
+    // Tagline breathes from faint to bold (full strength when the journal is empty), wordmark floats.
+    val tagAlpha by t.animateFloat(
+        0.06f, if (items.isEmpty()) 1f else 0.2f,
+        infiniteRepeatable(tween(2600, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "a"
+    )
+    val wordY by t.animateFloat(
+        0f, -12f,
+        infiniteRepeatable(tween(1300, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "w"
+    )
     NovaCard(NovaColors.Yellow) {
         Text(
             "LET THE\nDAY\nSETTLE\nINTO\nWORDS",
             Modifier.align(Alignment.Center),
-            style = bodyStyle(68.sp, FontWeight.Medium, NovaColors.Ink.copy(alpha = 0.06f))
+            style = bodyStyle(68.sp, FontWeight.Bold, NovaColors.Ink.copy(alpha = tagAlpha))
                 .copy(textAlign = TextAlign.Center, lineHeight = 70.sp)
         )
         Column(Modifier.fillMaxSize().padding(horizontal = 22.dp, vertical = 36.dp), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -123,7 +148,7 @@ private fun JournalCard(items: List<Entry>, onOpen: (Entry) -> Unit, onNew: () -
             Spacer(Modifier.height(6.dp))
             PillButton("New Entry", onClick = onNew)
             Spacer(Modifier.height(20.dp))
-            Wordmark(46.sp)
+            Wordmark(46.sp, modifier = Modifier.graphicsLayer { translationY = wordY })
         }
     }
 }
@@ -149,11 +174,7 @@ private fun PhotosCard(photos: List<Pair<Entry, String>>, onOpen: (Entry) -> Uni
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         items(photos) { (entry, path) ->
-                            AsyncImage(
-                                File(path), null,
-                                Modifier.fillMaxWidth().aspectRatio(1f).bounceClick { onOpen(entry) },
-                                contentScale = ContentScale.Crop
-                            )
+                            PhotoImage(path, Modifier.fillMaxWidth().aspectRatio(1f).bounceClick { onOpen(entry) })
                         }
                     }
                 }
@@ -188,7 +209,7 @@ private fun EntryRow(e: Entry, onOpen: (Entry) -> Unit) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (e.photos.isNotEmpty()) {
-            AsyncImage(File(e.photos.first()), null, Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)), contentScale = ContentScale.Crop)
+            PhotoImage(e.photos.first(), Modifier.size(52.dp).clip(RoundedCornerShape(12.dp)))
             Spacer(Modifier.width(10.dp))
         }
         Column(Modifier.weight(1f)) {

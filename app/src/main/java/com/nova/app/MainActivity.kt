@@ -7,11 +7,14 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -30,15 +33,17 @@ class MainActivity : ComponentActivity() {
         )
         NovaFonts.init(this)
         val store = EntryStore(this)
-        setContent { NovaApp(store) }
+        val book = BookState(BookStore(this))
+        setContent { NovaApp(store, book) }
     }
 }
 
 @Composable
-fun NovaApp(store: EntryStore) {
+fun NovaApp(store: EntryStore, book: BookState) {
     val entries = remember { mutableStateListOf<Entry>().also { it.addAll(store.load()) } }
     var editing by remember { mutableStateOf<Entry?>(null) }
     var isNew by remember { mutableStateOf(false) }
+    var showBook by remember { mutableStateOf(false) }
 
     fun upsert(e: Entry) {
         val i = entries.indexOfFirst { it.id == e.id }
@@ -47,11 +52,12 @@ fun NovaApp(store: EntryStore) {
     }
     fun delete(e: Entry) {
         entries.removeAll { it.id == e.id }
-        e.photos.forEach { File(it).delete() }
+        e.photos.forEach { deletePhotoFiles(it) }
         store.save(entries.toList())
     }
 
     Box(Modifier.fillMaxSize().background(NovaColors.Green)) {
+        FloralBackdrop()
         AnimatedContent(
             targetState = editing,
             transitionSpec = {
@@ -67,7 +73,8 @@ fun NovaApp(store: EntryStore) {
                         isNew = true
                         editing = Entry(System.currentTimeMillis(), type, "", "", emptyList(), System.currentTimeMillis())
                     },
-                    onOpen = { isNew = false; editing = it }
+                    onOpen = { isNew = false; editing = it },
+                    onOpenBook = { showBook = true }
                 )
             } else {
                 EditorScreen(
@@ -79,5 +86,11 @@ fun NovaApp(store: EntryStore) {
                 )
             }
         }
+        AnimatedVisibility(visible = editing == null && !showBook, enter = fadeIn(), exit = fadeOut()) { FloralVines() }
+        AnimatedVisibility(
+            visible = showBook,
+            enter = slideInVertically(spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessLow)) { it },
+            exit = slideOutVertically { it } + fadeOut()
+        ) { BookScreen(book) { showBook = false } }
     }
 }

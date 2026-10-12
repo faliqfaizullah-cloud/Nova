@@ -62,3 +62,16 @@ fun copyIntoApp(ctx: Context, uri: Uri): String? = runCatching {
     }
     out.absolutePath
 }.getOrNull()
+
+// A photo reference is "absolute/path.ext#tintIndex" (tint = colorway, non-destructive).
+fun photoPath(ref: String): String = ref.substringBefore('#')
+fun photoTint(ref: String): Int = ref.substringAfter('#', "0").toIntOrNull() ?: 0
+fun withTint(ref: String, tint: Int): String = photoPath(ref) + "#" + tint
+fun isCutOut(ref: String): Boolean = photoPath(ref).endsWith("_cut.png")
+fun originalOf(path: String): String = path.removeSuffix("_cut.png") + ".jpg"
+
+fun deletePhotoFiles(ref: String) {
+    val p = photoPath(ref)
+    File(p).delete()
+    if (p.endsWith("_cut.png")) File(originalOf(p)).delete()
+}

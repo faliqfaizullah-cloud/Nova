@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -20,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.TextStyle
@@ -28,11 +28,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
-import coil.compose.AsyncImage
+import com.nova.app.CutOut
 import com.nova.app.Entry
 import com.nova.app.EntryType
 import com.nova.app.copyIntoApp
+import com.nova.app.isCutOut
 import com.nova.app.newPhotoFile
+import com.nova.app.originalOf
+import com.nova.app.photoPath
+import com.nova.app.photoTint
+import com.nova.app.withTint
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -51,6 +56,8 @@ fun EditorScreen(
     var body by remember { mutableStateOf(initial.body) }
     val photos = remember { mutableStateListOf<String>().also { it.addAll(initial.photos) } }
     var pending by remember { mutableStateOf<File?>(null) }
+    var sel by remember { mutableIntStateOf(-1) }
+    var busy by remember { mutableStateOf(false) }
 
     val bg = when (initial.type) {
         EntryType.NOTE -> NovaColors.Paper
@@ -88,8 +95,38 @@ fun EditorScreen(
         }
     }
 
+    fun doCutOut() {
+        val i = sel
+        if (i !in photos.indices || busy) return
+        val ref = photos[i]
+        scope.launch {
+            busy = true
+            val out = CutOut.run(photoPath(ref))
+            busy = false
+            if (out == null) {
+                Toast.makeText(ctx, "Cut-out needs Google Play services (and internet the first time)", Toast.LENGTH_LONG).show()
+            } else if (i in photos.indices && photoPath(photos[i]) == photoPath(ref)) {
+                view.confirm()
+                photos[i] = withTint(out, photoTint(ref))
+            }
+        }
+    }
+
+    fun restore() {
+        val i = sel
+        if (i !in photos.indices) return
+        val orig = originalOf(photoPath(photos[i]))
+        if (File(orig).exists()) photos[i] = withTint(orig, photoTint(photos[i]))
+    }
+
+    fun nextColor() {
+        val i = sel
+        if (i !in photos.indices) return
+        photos[i] = withTint(photos[i], (photoTint(photos[i]) + 1) % Colorways.size)
+    }
+
     Box(
-        Modifier.fillMaxSize().background(NovaColors.Green)
+        Modifier.fillMaxSize()
             .statusBarsPadding().navigationBarsPadding().imePadding().padding(16.dp)
     ) {
         Column(
@@ -118,21 +155,42 @@ fun EditorScreen(
             if (photos.isNotEmpty()) {
                 Spacer(Modifier.height(10.dp))
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    itemsIndexed(photos.toList()) { i, path ->
-                        Box(Modifier.size(92.dp)) {
-                            AsyncImage(
-                                File(path), null,
-                                Modifier.fillMaxSize().clip(RoundedCornerShape(16.dp)),
-                                contentScale = ContentScale.Crop
+                    itemsIndexed(photos.toList()) { i, ref ->
+                        val selected = i == sel
+                        Box(
+                            Modifier.size(92.dp).then(
+                                if (selected) Modifier.border(3.dp, NovaColors.Ink, RoundedCornerShape(18.dp)) else Modifier
+                            )
+                        ) {
+                            PhotoImage(
+                                ref,
+                                Modifier.fillMaxSize().padding(if (selected) 3.dp else 0.dp)
+                                    .bounceClick { sel = if (sel == i) -1 else i }
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(NovaColors.Ink.copy(alpha = 0.08f))
                             )
                             Box(
                                 Modifier.align(Alignment.TopEnd).padding(4.dp).size(24.dp)
-                                    .bounceClick { photos.removeAt(i) }
+                                    .bounceClick { photos.removeAt(i); sel = -1 }
                                     .clip(CircleShape).background(NovaColors.Ink),
                                 contentAlignment = Alignment.Center
                             ) { Text("×", style = bodyStyle(16.sp, FontWeight.Bold, NovaColors.Paper)) }
                         }
                     }
+                }
+                Spacer(Modifier.height(8.dp))
+                if (sel in photos.indices) {
+                    val ref = photos[sel]
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        if (isCutOut(ref)) ToolPill("Restore") { restore() }
+                        else ToolPill(if (busy) "Cutting out…" else "Cut out") { doCutOut() }
+                        ToolPill("Color: ${Colorways[photoTint(ref) % Colorways.size].name}") { nextColor() }
+                    }
+                } else {
+                    Text(
+                        "Tap a photo to cut out or recolor it",
+                        style = bodyStyle(12.sp, color = NovaColors.Ink.copy(alpha = 0.55f))
+                    )
                 }
             }
 
@@ -145,6 +203,19 @@ fun EditorScreen(
                 PillButton("Save") { commit() }
             }
         }
+    }
+}
+
+@Composable
+private fun ToolPill(text: String, onClick: () -> Unit) {
+    Box(
+        Modifier.bounceClick(onClick)
+            .clip(CircleShape).background(NovaColors.Ink.copy(alpha = 0.1f))
+            .border(1.5.dp, NovaColors.Ink, CircleShape)
+            .padding(horizontal = 16.dp, vertical = 9.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(text, style = bodyStyle(14.sp, FontWeight.SemiBold))
     }
 }
 
