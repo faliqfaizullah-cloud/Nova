@@ -1,0 +1,3 @@
+Optional (the app falls back to system fonts if these are missing):
+  caprasimo.ttf   -> Google Fonts "Caprasimo"  (chunky Cooper-style wordmark, like "tenrec")
+  intertight.ttf  -> Google Fonts "Inter Tight" (Helvetica-style grotesque for headlines/body)
